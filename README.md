@@ -16,6 +16,17 @@ test integrations against the real service from your local environment.
 
 ## Getting started
 
+### Prerequisites
+
+- Node.js 18+ (Wrangler requires 16.17.0 or later — a version manager such as
+  [nvm](https://github.com/nvm-sh/nvm) or [Volta](https://volta.sh/) makes
+  switching versions easy).
+- Docker Desktop or an alternative such as Colima running locally. Confirm that
+  Docker is available by running `docker info`.
+- A Cloudflare account with a Sandbox-enabled API token.
+
+### Local development
+
 ```bash
 npm install
 npm run build
@@ -37,6 +48,35 @@ For rapid iteration you can run the TypeScript sources directly:
 ```bash
 npm run dev
 ```
+
+### Deploying your own Worker + sandbox container
+
+If you would like to provision a Cloudflare Worker that talks to the Sandbox
+service directly, the official `npm create cloudflare@latest --
+<project-name> --template=cloudflare/sandbox-sdk/examples/minimal` template is a
+helpful starting point. The generated project includes:
+
+- `src/index.ts` — an example Worker script that demonstrates `getSandbox`,
+  `exec`, `writeFile`, and `readFile` usage.
+- `wrangler.jsonc` — the configuration that binds the Worker to the Sandbox
+  Durable Object and container image.
+- `Dockerfile` — the execution environment that runs inside each sandbox
+  instance.
+
+From the generated directory:
+
+1. Install dependencies and explore the Worker code.
+2. Run `npm run dev` (or `npx wrangler dev`) to test locally. The first run will
+   build your Docker image, so expect a brief delay.
+3. Exercise the `/run` and `/file` endpoints to execute Python and perform file
+   I/O inside the sandbox.
+4. Deploy globally with `npx wrangler deploy`. Use `npx wrangler containers
+   list` to monitor provisioning status. Allow a few minutes after the first
+   deploy for the container image to become available.
+
+When exposing preview URLs through `sandbox.exposePort()` you will need to set
+up a custom domain with wildcard DNS routing — `*.workers.dev` domains do not
+support the required subdomain patterns.
 
 ## API endpoints
 
