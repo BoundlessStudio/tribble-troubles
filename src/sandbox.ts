@@ -42,10 +42,39 @@ export class Sandbox {
   }
 
   private updateInfo(info: SandboxInfo): void {
-    this.info = info;
-    if (info.ttlSeconds != null) {
-      this.ttlSeconds = info.ttlSeconds;
+    const previous = this.info;
+    const ttl = info.ttlSeconds ?? previous?.ttlSeconds ?? this.ttlSeconds ?? null;
+    this.info = {
+      id: info.id ?? this.id,
+      createdAt: info.createdAt ?? previous?.createdAt ?? new Date().toISOString(),
+      lastUsedAt: info.lastUsedAt ?? previous?.lastUsedAt ?? info.createdAt ?? new Date().toISOString(),
+      ttlSeconds: ttl,
+      metadata: info.metadata ?? previous?.metadata ?? this.metadata,
+      jurisdiction: info.jurisdiction ?? previous?.jurisdiction ?? null,
+      keepAlive: info.keepAlive ?? previous?.keepAlive,
+      status: info.status ?? previous?.status ?? null,
+    };
+    if (ttl != null) {
+      this.ttlSeconds = ttl;
     }
+  }
+
+  private markUsed(date: Date = new Date()): void {
+    const timestamp = date.toISOString();
+    if (this.info) {
+      this.info = { ...this.info, lastUsedAt: timestamp };
+      return;
+    }
+
+    this.info = {
+      id: this.id,
+      createdAt: timestamp,
+      lastUsedAt: timestamp,
+      ttlSeconds: this.ttlSeconds ?? null,
+      metadata: this.metadata,
+      jurisdiction: null,
+      status: null,
+    };
   }
 
   public applyInfo(info: SandboxInfo): void {
@@ -64,7 +93,11 @@ export class Sandbox {
 
   public async touch(): Promise<void> {
     const info = await this.client.touchSandbox(this.id);
-    this.updateInfo(info);
+    if (info) {
+      this.updateInfo(info);
+    } else {
+      this.markUsed();
+    }
   }
 
   public isExpired(referenceDate: Date = new Date()): boolean {
@@ -85,7 +118,11 @@ export class Sandbox {
     }
 
     const { result, sandbox } = await this.client.execSandbox(this.id, request);
-    this.updateInfo(sandbox);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
     return result;
   }
 
@@ -97,7 +134,11 @@ export class Sandbox {
     ensureSandboxRelativePath(options.path);
 
     const { file, sandbox } = await this.client.writeFile(this.id, options);
-    this.updateInfo(sandbox);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
     return file;
   }
 
@@ -110,23 +151,39 @@ export class Sandbox {
     ensureSandboxRelativePath(options.path);
 
     const { file, sandbox } = await this.client.readFile(this.id, options.path, encoding);
-    this.updateInfo(sandbox);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
     return file;
   }
 
   public async deletePath(targetPath: string): Promise<void> {
     const info = await this.client.deletePath(this.id, targetPath);
-    this.updateInfo(info);
+    if (info) {
+      this.updateInfo(info);
+    } else {
+      this.markUsed();
+    }
   }
 
   public async ensureDirectory(targetPath: string): Promise<void> {
     const { sandbox } = await this.client.ensureDirectory(this.id, targetPath);
-    this.updateInfo(sandbox);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
   }
 
   public async listDirectory(targetPath = "."): Promise<ListDirectoryResult> {
     const { directory, sandbox } = await this.client.listDirectory(this.id, targetPath);
-    this.updateInfo(sandbox);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
     return directory;
   }
 

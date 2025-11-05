@@ -7,7 +7,8 @@ test integrations against the real service from your local environment.
 
 ## Features
 
-- Provision and destroy Cloudflare sandboxes on demand using your account credentials.
+- Provision and destroy Cloudflare sandboxes on demand using your account credentials
+  (or token-only access when targeting the Sandbox v1 API).
 - Execute commands inside each sandbox with timeouts and custom environment variables.
 - Read, write, and list files while preventing path traversal attacks.
 - Delegate TTL enforcement to Cloudflare and manually trigger remote pruning when needed.
@@ -23,7 +24,8 @@ test integrations against the real service from your local environment.
   switching versions easy).
 - Docker Desktop or an alternative such as Colima running locally. Confirm that
   Docker is available by running `docker info`.
-- A Cloudflare account with a Sandbox-enabled API token.
+- A Cloudflare account with a Sandbox-enabled API token. The account identifier is
+  required when you point the proxy at the Workers `client/v4` endpoint.
 
 ### Local development
 
@@ -37,9 +39,11 @@ The server listens on port `8787` by default. Set the following environment
 variables (or provide the equivalent options programmatically) to authenticate
 with Cloudflare:
 
-- `CLOUDFLARE_ACCOUNT_ID` – your Cloudflare account identifier (required)
+- `CLOUDFLARE_ACCOUNT_ID` – your Cloudflare account identifier (required when
+  using the Workers `client/v4` API)
 - `CLOUDFLARE_API_TOKEN` – an API token with Sandbox permissions (required)
-- `CLOUDFLARE_API_BASE_URL` – optional alternative origin for the Cloudflare API
+- `CLOUDFLARE_API_BASE_URL` – optional alternative origin for the Cloudflare API.
+  Defaults to the Sandbox v1 host when no account ID is provided.
 
 Use the `PORT` variable to change the listening port.
 

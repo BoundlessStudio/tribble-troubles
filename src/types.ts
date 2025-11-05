@@ -7,6 +7,8 @@ export interface SandboxInfo {
   ttlSeconds?: number | null;
   metadata?: SandboxMetadata;
   jurisdiction?: string | null;
+  keepAlive?: boolean;
+  status?: string | null;
 }
 
 export interface ExecRequest {

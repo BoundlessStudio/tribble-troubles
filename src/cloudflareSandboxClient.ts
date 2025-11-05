@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { fetch } from "undici";
 
 import {
@@ -14,7 +16,7 @@ import {
 import { ensureSandboxRelativePath } from "./utils/path";
 
 export interface CloudflareSandboxClientOptions {
-  accountId: string;
+  accountId?: string;
   apiToken: string;
   baseUrl?: string;
 }
@@ -26,13 +28,117 @@ interface CloudflareApiResponse<T> {
   result: T;
 }
 
+function isCloudflareEnvelope(value: unknown): value is CloudflareApiResponse<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "success" in value &&
+    "result" in value
+  );
+}
+
+function firstErrorMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  if (isCloudflareEnvelope(value)) {
+    const errors = value.errors ?? [];
+    if (errors.length > 0) {
+      return errors[0]?.message;
+    }
+  }
+
+  if ("error" in value && typeof (value as { error?: unknown }).error === "string") {
+    return (value as { error: string }).error;
+  }
+
+  if ("message" in value && typeof (value as { message?: unknown }).message === "string") {
+    return (value as { message: string }).message;
+  }
+
+  return undefined;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function unwrapSandbox(value: unknown): CloudflareSandboxRecord | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  if ("sandbox" in value) {
+    const sandbox = (value as { sandbox?: unknown }).sandbox;
+    if (sandbox && typeof sandbox === "object") {
+      return sandbox as CloudflareSandboxRecord;
+    }
+  }
+
+  if ("id" in value) {
+    return value as CloudflareSandboxRecord;
+  }
+
+  return undefined;
+}
+
+function unwrapFile(value: unknown): CloudflareFileContent | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  if ("file" in value) {
+    const file = (value as { file?: unknown }).file;
+    if (file && typeof file === "object") {
+      return file as CloudflareFileContent;
+    }
+  }
+
+  if ("content" in value && "encoding" in value) {
+    return value as CloudflareFileContent;
+  }
+
+  return undefined;
+}
+
+function unwrapDirectory(value: unknown): CloudflareDirectoryResult | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  if ("directory" in value) {
+    const directory = (value as { directory?: unknown }).directory;
+    if (directory && typeof directory === "object") {
+      return directory as CloudflareDirectoryResult;
+    }
+  }
+
+  if ("entries" in value && "path" in value) {
+    return value as CloudflareDirectoryResult;
+  }
+
+  return undefined;
+}
+
 interface CloudflareSandboxRecord {
   id: string;
-  created_at: string;
-  last_used_at: string;
+  created_at?: string;
+  createdAt?: string;
+  last_used_at?: string;
+  lastActive?: string;
+  last_active?: string;
   ttl_seconds?: number | null;
+  ttlSeconds?: number | null;
   metadata?: SandboxMetadata;
   jurisdiction?: string | null;
+  keep_alive?: boolean;
+  keepAlive?: boolean;
+  status?: string | null;
 }
 
 interface CloudflareExecResult {
@@ -40,12 +146,17 @@ interface CloudflareExecResult {
   args: string[];
   stdout: string;
   stderr: string;
-  exit_code: number | null;
+  exit_code?: number | null;
+  exitCode?: number | null;
   success: boolean;
-  duration_ms: number;
-  timed_out: boolean;
-  started_at: string;
-  finished_at: string;
+  duration_ms?: number;
+  durationMs?: number;
+  timed_out?: boolean;
+  timedOut?: boolean;
+  started_at?: string;
+  startedAt?: string;
+  finished_at?: string;
+  finishedAt?: string;
 }
 
 interface CloudflareFileContent {
@@ -53,7 +164,8 @@ interface CloudflareFileContent {
   encoding: FileEncoding;
   content: string;
   size: number;
-  modified_at: string;
+  modified_at?: string;
+  modifiedAt?: string;
 }
 
 interface CloudflareDirectoryEntry {
@@ -62,6 +174,7 @@ interface CloudflareDirectoryEntry {
   type: "file" | "directory" | "symlink";
   size?: number;
   modified_at?: string;
+  modifiedAt?: string;
 }
 
 interface CloudflareDirectoryResult {
@@ -93,13 +206,18 @@ interface SandboxPruneResponse {
 }
 
 function mapSandbox(record: CloudflareSandboxRecord): SandboxInfo {
+  const createdAt = record.created_at ?? record.createdAt ?? new Date().toISOString();
+  const lastUsedAt =
+    record.last_used_at ?? record.lastActive ?? record.last_active ?? createdAt;
   return {
     id: record.id,
-    createdAt: record.created_at,
-    lastUsedAt: record.last_used_at,
-    ttlSeconds: record.ttl_seconds ?? null,
+    createdAt,
+    lastUsedAt,
+    ttlSeconds: record.ttl_seconds ?? record.ttlSeconds ?? null,
     metadata: record.metadata,
     jurisdiction: record.jurisdiction ?? null,
+    keepAlive: record.keep_alive ?? record.keepAlive,
+    status: record.status ?? null,
   };
 }
 
@@ -109,12 +227,12 @@ function mapExecResult(result: CloudflareExecResult): ExecResult {
     args: result.args,
     stdout: result.stdout,
     stderr: result.stderr,
-    exitCode: result.exit_code,
+    exitCode: result.exit_code ?? result.exitCode ?? null,
     success: result.success,
-    durationMs: result.duration_ms,
-    timedOut: result.timed_out,
-    startedAt: result.started_at,
-    finishedAt: result.finished_at,
+    durationMs: result.duration_ms ?? result.durationMs ?? 0,
+    timedOut: result.timed_out ?? result.timedOut ?? false,
+    startedAt: result.started_at ?? result.startedAt ?? new Date().toISOString(),
+    finishedAt: result.finished_at ?? result.finishedAt ?? new Date().toISOString(),
   };
 }
 
@@ -124,7 +242,7 @@ function mapFileContent(content: CloudflareFileContent): FileContent {
     encoding: content.encoding,
     content: content.content,
     size: content.size,
-    modifiedAt: content.modified_at,
+    modifiedAt: content.modified_at ?? content.modifiedAt ?? new Date().toISOString(),
   };
 }
 
@@ -134,7 +252,7 @@ function mapDirectoryEntry(entry: CloudflareDirectoryEntry): DirectoryEntry {
     path: entry.path,
     type: entry.type,
     size: entry.size,
-    modifiedAt: entry.modified_at,
+    modifiedAt: entry.modified_at ?? entry.modifiedAt,
   };
 }
 
@@ -146,18 +264,27 @@ function mapDirectoryResult(result: CloudflareDirectoryResult): ListDirectoryRes
 }
 
 export class CloudflareSandboxClient {
-  private readonly accountId: string;
+  private readonly accountId?: string;
   private readonly apiToken: string;
   private readonly baseUrl: string;
 
   constructor(options: CloudflareSandboxClientOptions) {
     this.accountId = options.accountId;
     this.apiToken = options.apiToken;
-    this.baseUrl = options.baseUrl ?? "https://api.cloudflare.com/client/v4";
+    if (options.baseUrl) {
+      this.baseUrl = options.baseUrl;
+    } else {
+      this.baseUrl = this.accountId
+        ? "https://api.cloudflare.com/client/v4"
+        : "https://api.cloudflare.com/sandbox/v1";
+    }
   }
 
   private get sandboxesPath(): string {
-    return `/accounts/${this.accountId}/workers/sandboxes`;
+    if (this.accountId) {
+      return `/accounts/${this.accountId}/workers/sandboxes`;
+    }
+    return `/sandboxes`;
   }
 
   private buildUrl(path: string): string {
@@ -191,21 +318,32 @@ export class CloudflareSandboxClient {
       body: body == null ? undefined : JSON.stringify(body),
     });
 
+    const text = await response.text();
+    const parsed = text.length > 0 ? safeJsonParse(text) : undefined;
+
     if (!response.ok) {
-      const text = await response.text();
+      const message =
+        firstErrorMessage(parsed) ??
+        (text.length > 0 ? text : `HTTP ${response.status} ${response.statusText}`);
       throw new Error(
-        `Cloudflare Sandbox API request failed with status ${response.status}: ${text}`
+        `Cloudflare Sandbox API request failed with status ${response.status}: ${message}`
       );
     }
 
-    const data = (await response.json()) as CloudflareApiResponse<T>;
-
-    if (!data.success) {
-      const message = data.errors?.[0]?.message ?? "Unknown Cloudflare Sandbox API error";
-      throw new Error(message);
+    if (!parsed) {
+      return undefined as T;
     }
 
-    return data.result;
+    if (isCloudflareEnvelope(parsed)) {
+      if (!parsed.success) {
+        const message =
+          parsed.errors?.[0]?.message ?? "Unknown Cloudflare Sandbox API error";
+        throw new Error(message);
+      }
+      return parsed.result as T;
+    }
+
+    return parsed as T;
   }
 
   public async createSandbox(options: {
@@ -213,56 +351,100 @@ export class CloudflareSandboxClient {
     metadata?: SandboxMetadata;
     ttlSeconds?: number;
   }): Promise<SandboxInfo> {
-    const result = await this.request<CloudflareSandboxRecord>("POST", this.sandboxesPath, {
+    const payload = await this.request<unknown>("POST", this.sandboxesPath, {
       id: options.id,
       metadata: options.metadata,
       ttl_seconds: options.ttlSeconds,
     });
-    return mapSandbox(result);
+    const record = unwrapSandbox(payload);
+    if (!record) {
+      throw new Error("Cloudflare Sandbox API did not return sandbox metadata");
+    }
+    return mapSandbox(record);
   }
 
   public async getSandbox(id: string): Promise<SandboxInfo> {
-    const result = await this.request<CloudflareSandboxRecord>(
+    const payload = await this.request<unknown>(
       "GET",
       `${this.sandboxesPath}/${encodeURIComponent(id)}`
     );
-    return mapSandbox(result);
+    const record = unwrapSandbox(payload);
+    if (!record) {
+      throw new Error(`Sandbox ${id} not found`);
+    }
+    return mapSandbox(record);
   }
 
   public async listSandboxes(): Promise<SandboxInfo[]> {
-    const result = await this.request<CloudflareSandboxRecord[]>("GET", this.sandboxesPath);
-    return result.map(mapSandbox);
+    const result = await this.request<unknown>("GET", this.sandboxesPath);
+    if (Array.isArray(result)) {
+      return result.map((record) => mapSandbox(record as CloudflareSandboxRecord));
+    }
+
+    const record = unwrapSandbox(result);
+    if (record) {
+      return [mapSandbox(record)];
+    }
+
+    return [];
   }
 
   public async deleteSandbox(id: string): Promise<SandboxInfo> {
-    const result = await this.request<CloudflareSandboxRecord>(
+    const payload = await this.request<unknown>(
       "DELETE",
       `${this.sandboxesPath}/${encodeURIComponent(id)}`
     );
-    return mapSandbox(result);
+    const record = unwrapSandbox(payload);
+    if (!record) {
+      return {
+        id,
+        createdAt: new Date(0).toISOString(),
+        lastUsedAt: new Date(0).toISOString(),
+        ttlSeconds: null,
+      };
+    }
+    return mapSandbox(record);
   }
 
   public async pruneSandboxes(): Promise<number> {
-    const result = await this.request<SandboxPruneResponse>(
+    const result = await this.request<unknown>(
       "POST",
       `${this.sandboxesPath}/prune`
     );
-    return result.removed;
+    if (typeof result === "number") {
+      return result;
+    }
+    if (result && typeof result === "object" && "removed" in result) {
+      const removed = (result as { removed?: unknown }).removed;
+      if (typeof removed === "number") {
+        return removed;
+      }
+    }
+    return 0;
   }
 
   public async touchSandbox(id: string): Promise<SandboxInfo> {
-    const result = await this.request<CloudflareSandboxRecord>(
+    const payload = await this.request<unknown>(
       "POST",
       `${this.sandboxesPath}/${encodeURIComponent(id)}/touch`
     );
-    return mapSandbox(result);
+    const record = unwrapSandbox(payload);
+    if (!record) {
+      return {
+        id,
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        ttlSeconds: null,
+      };
+    }
+    return mapSandbox(record);
   }
 
   public async execSandbox(
     id: string,
     request: ExecRequest
-  ): Promise<{ result: ExecResult; sandbox: SandboxInfo }> {
-    const payload = await this.request<SandboxExecResponse>(
+  ): Promise<{ result: ExecResult; sandbox?: SandboxInfo }> {
+    const payload = await this.request<unknown>(
       "POST",
       `${this.sandboxesPath}/${encodeURIComponent(id)}/exec`,
       {
@@ -270,36 +452,78 @@ export class CloudflareSandboxClient {
         args: request.args,
         stdin: request.stdin,
         timeout_ms: request.timeoutMs,
+        timeout: request.timeoutMs,
         env: request.env,
         use_shell: request.useShell ?? false,
       }
     );
 
+    let exec: CloudflareExecResult | undefined;
+    if (payload && typeof payload === "object") {
+      if ("exec" in payload) {
+        exec = (payload as { exec?: CloudflareExecResult }).exec;
+      } else if ("result" in payload) {
+        const value = (payload as { result?: unknown }).result;
+        if (value && typeof value === "object") {
+          exec = value as CloudflareExecResult;
+        }
+      }
+    }
+
+    if (!exec && payload && typeof payload === "object") {
+      exec = payload as CloudflareExecResult;
+    }
+
+    if (!exec) {
+      throw new Error("Cloudflare Sandbox API did not return execution results");
+    }
+
+    const sandboxRecord = unwrapSandbox(payload);
+
     return {
-      result: mapExecResult(payload.exec),
-      sandbox: mapSandbox(payload.sandbox),
+      result: mapExecResult(exec),
+      sandbox: sandboxRecord ? mapSandbox(sandboxRecord) : undefined,
     };
   }
 
   public async writeFile(
     id: string,
     options: WriteFileOptions
-  ): Promise<{ file: FileContent; sandbox: SandboxInfo }> {
-    const path = ensureSandboxRelativePath(options.path);
-    const payload = await this.request<SandboxFileResponse>(
-      "PUT",
-      `${this.sandboxesPath}/${encodeURIComponent(id)}/files`,
-      {
-        path,
-        content: options.content,
-        encoding: options.encoding ?? "utf8",
-        create_directories: Boolean(options.createDirectories),
-      }
-    );
+  ): Promise<{ file: FileContent; sandbox?: SandboxInfo }> {
+    const safePath = ensureSandboxRelativePath(options.path);
+    const encoding = options.encoding ?? "utf8";
+    const accountScoped = Boolean(this.accountId);
+    const method = accountScoped ? "PUT" : "POST";
+    const endpoint = accountScoped
+      ? `${this.sandboxesPath}/${encodeURIComponent(id)}/files`
+      : `${this.sandboxesPath}/${encodeURIComponent(id)}/files/write-file`;
+    const payload = await this.request<unknown>(method, endpoint, {
+      path: safePath,
+      content: options.content,
+      encoding,
+      create_directories: accountScoped ? Boolean(options.createDirectories) : undefined,
+      recursive: accountScoped ? undefined : Boolean(options.createDirectories),
+    });
+
+    const filePayload = unwrapFile(payload);
+    const file = filePayload
+      ? mapFileContent(filePayload)
+      : {
+          path: safePath,
+          encoding,
+          content: options.content,
+          size:
+            encoding === "base64"
+              ? Buffer.from(options.content, "base64").length
+              : Buffer.byteLength(options.content, "utf8"),
+          modifiedAt: new Date().toISOString(),
+        };
+
+    const sandboxRecord = unwrapSandbox(payload);
 
     return {
-      file: mapFileContent(payload.file),
-      sandbox: mapSandbox(payload.sandbox),
+      file,
+      sandbox: sandboxRecord ? mapSandbox(sandboxRecord) : undefined,
     };
   }
 
@@ -307,11 +531,15 @@ export class CloudflareSandboxClient {
     id: string,
     path: string,
     encoding: FileEncoding
-  ): Promise<{ file: FileContent; sandbox: SandboxInfo }> {
+  ): Promise<{ file: FileContent; sandbox?: SandboxInfo }> {
     const safePath = ensureSandboxRelativePath(path);
-    const payload = await this.request<SandboxFileResponse>(
+    const accountScoped = Boolean(this.accountId);
+    const endpoint = accountScoped
+      ? `${this.sandboxesPath}/${encodeURIComponent(id)}/files`
+      : `${this.sandboxesPath}/${encodeURIComponent(id)}/files/read-file`;
+    const payload = await this.request<unknown>(
       "GET",
-      `${this.sandboxesPath}/${encodeURIComponent(id)}/files`,
+      endpoint,
       undefined,
       {
         path: safePath,
@@ -319,58 +547,83 @@ export class CloudflareSandboxClient {
       }
     );
 
+    const filePayload = unwrapFile(payload);
+    if (!filePayload) {
+      throw new Error("Requested path is not a file");
+    }
+
+    const sandboxRecord = unwrapSandbox(payload);
+
     return {
-      file: mapFileContent(payload.file),
-      sandbox: mapSandbox(payload.sandbox),
+      file: mapFileContent(filePayload),
+      sandbox: sandboxRecord ? mapSandbox(sandboxRecord) : undefined,
     };
   }
 
-  public async deletePath(id: string, targetPath: string): Promise<SandboxInfo> {
+  public async deletePath(id: string, targetPath: string): Promise<SandboxInfo | undefined> {
     const path = ensureSandboxRelativePath(targetPath);
-    const payload = await this.request<SandboxDeleteResponse>(
-      "DELETE",
-      `${this.sandboxesPath}/${encodeURIComponent(id)}/files`,
-      {
-        path,
-      }
-    );
-    return mapSandbox(payload.sandbox);
+    const accountScoped = Boolean(this.accountId);
+    const method = accountScoped ? "DELETE" : "POST";
+    const endpoint = accountScoped
+      ? `${this.sandboxesPath}/${encodeURIComponent(id)}/files`
+      : `${this.sandboxesPath}/${encodeURIComponent(id)}/files/delete-file`;
+    const payload = await this.request<unknown>(method, endpoint, {
+      path,
+    });
+    const record = unwrapSandbox(payload);
+    return record ? mapSandbox(record) : undefined;
   }
 
   public async ensureDirectory(
     id: string,
     directoryPath: string
-  ): Promise<{ directory: ListDirectoryResult; sandbox: SandboxInfo }> {
+  ): Promise<{ directory: ListDirectoryResult; sandbox?: SandboxInfo }> {
     const path = ensureSandboxRelativePath(directoryPath);
-    const payload = await this.request<SandboxDirectoryResponse>(
+    const accountScoped = Boolean(this.accountId);
+    const endpoint = accountScoped
+      ? `${this.sandboxesPath}/${encodeURIComponent(id)}/directories`
+      : `${this.sandboxesPath}/${encodeURIComponent(id)}/files/mkdir`;
+    const payload = await this.request<unknown>(
       "POST",
-      `${this.sandboxesPath}/${encodeURIComponent(id)}/directories`,
-      {
-        path,
-      }
+      endpoint,
+      accountScoped ? { path } : { path, recursive: false }
     );
 
+    const directory = unwrapDirectory(payload);
+    const sandboxRecord = unwrapSandbox(payload);
+
     return {
-      directory: mapDirectoryResult(payload.directory),
-      sandbox: mapSandbox(payload.sandbox),
+      directory: directory ? mapDirectoryResult(directory) : { path, entries: [] },
+      sandbox: sandboxRecord ? mapSandbox(sandboxRecord) : undefined,
     };
   }
 
   public async listDirectory(
     id: string,
     directoryPath: string
-  ): Promise<{ directory: ListDirectoryResult; sandbox: SandboxInfo }> {
+  ): Promise<{ directory: ListDirectoryResult; sandbox?: SandboxInfo }> {
     const path = ensureSandboxRelativePath(directoryPath);
-    const payload = await this.request<SandboxDirectoryResponse>(
+    const accountScoped = Boolean(this.accountId);
+    const endpoint = accountScoped
+      ? `${this.sandboxesPath}/${encodeURIComponent(id)}/directories`
+      : `${this.sandboxesPath}/${encodeURIComponent(id)}/files/read-file`;
+    const payload = await this.request<unknown>(
       "GET",
-      `${this.sandboxesPath}/${encodeURIComponent(id)}/directories`,
+      endpoint,
       undefined,
-      { path }
+      accountScoped ? { path } : { path, encoding: "utf8" }
     );
 
+    const directory = unwrapDirectory(payload);
+    if (!directory) {
+      throw new Error("Requested path is not a directory");
+    }
+
+    const sandboxRecord = unwrapSandbox(payload);
+
     return {
-      directory: mapDirectoryResult(payload.directory),
-      sandbox: mapSandbox(payload.sandbox),
+      directory: mapDirectoryResult(directory),
+      sandbox: sandboxRecord ? mapSandbox(sandboxRecord) : undefined,
     };
   }
 }

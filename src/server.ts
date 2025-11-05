@@ -121,18 +121,30 @@ async function ensureSandbox(manager: SandboxManager, id: string) {
 }
 
 export function createSandboxServer(options: SandboxServerOptions = {}): SandboxServer {
-  const accountId = options.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = options.apiToken ?? process.env.CLOUDFLARE_API_TOKEN;
-  const apiBaseUrl = options.apiBaseUrl ?? process.env.CLOUDFLARE_API_BASE_URL;
+  const providedAccount =
+    options.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? undefined;
+  const configuredBaseUrl = options.apiBaseUrl ?? process.env.CLOUDFLARE_API_BASE_URL;
 
-  if (!accountId || !apiToken) {
-    throw new Error("Cloudflare accountId and apiToken must be provided");
+  if (!apiToken) {
+    throw new Error("Cloudflare apiToken must be provided");
+  }
+
+  const defaultBaseUrl = providedAccount
+    ? "https://api.cloudflare.com/client/v4"
+    : "https://api.cloudflare.com/sandbox/v1";
+  const baseUrl = configuredBaseUrl ?? defaultBaseUrl;
+
+  if (!providedAccount && baseUrl.includes("/client/v4")) {
+    throw new Error(
+      "CLOUDFLARE_ACCOUNT_ID is required when using the Workers client/v4 API"
+    );
   }
 
   const manager = new SandboxManager({
-    accountId,
+    accountId: providedAccount,
     apiToken,
-    baseUrl: apiBaseUrl,
+    baseUrl,
   });
 
   const app = express();
@@ -144,8 +156,8 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
       res.json({
         name: "Cloudflare Sandbox API proxy",
         version: "1.0.0",
-        accountId,
-        apiBaseUrl: apiBaseUrl ?? "https://api.cloudflare.com/client/v4",
+        accountId: providedAccount ?? null,
+        apiBaseUrl: baseUrl,
         endpoints: {
           listSandboxes: "GET /sandboxes",
           createSandbox: "POST /sandboxes",

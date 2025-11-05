@@ -3,6 +3,7 @@ import test from "node:test";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 
 import { SandboxManager } from "../src/sandboxManager";
+import type { SandboxManagerOptions } from "../src/sandboxManager";
 
 const ACCOUNT_ID = "acct-123";
 const API_TOKEN = "token-xyz";
@@ -32,7 +33,8 @@ function sandboxRecord(overrides: Partial<Record<string, unknown>> = {}) {
 type TestMockPool = ReturnType<MockAgent["get"]>;
 
 async function withMockedManager(
-  fn: (manager: SandboxManager, pool: TestMockPool) => Promise<void>
+  fn: (manager: SandboxManager, pool: TestMockPool) => Promise<void>,
+  overrides: Partial<SandboxManagerOptions> = {}
 ): Promise<void> {
   const mockAgent = new MockAgent();
   mockAgent.disableNetConnect();
@@ -40,10 +42,19 @@ async function withMockedManager(
   const previous = getGlobalDispatcher();
   setGlobalDispatcher(mockAgent);
 
+  const hasAccountOverride = Object.prototype.hasOwnProperty.call(
+    overrides,
+    "accountId"
+  );
+  const accountId = hasAccountOverride ? overrides.accountId : ACCOUNT_ID;
+  const baseUrl =
+    overrides.baseUrl ??
+    (accountId ? `${ORIGIN}/client/v4` : `${ORIGIN}/sandbox/v1`);
+
   const manager = new SandboxManager({
-    accountId: ACCOUNT_ID,
-    apiToken: API_TOKEN,
-    baseUrl: `${ORIGIN}/client/v4`,
+    accountId: accountId,
+    apiToken: overrides.apiToken ?? API_TOKEN,
+    baseUrl,
   });
 
   try {
@@ -81,6 +92,41 @@ test("creates sandboxes and lists them", async () => {
     assert.equal(sandboxes.length, 1);
     assert.equal(sandboxes[0].id, record.id);
   });
+});
+
+test("supports sandbox v1 API without account id", async () => {
+  await withMockedManager(
+    async (manager, pool) => {
+      const record = sandboxRecord({
+        last_used_at: undefined,
+        last_active: "2024-01-01T00:00:05.000Z",
+        ttl_seconds: undefined,
+      });
+
+      pool
+        .intercept({
+          path: `/sandbox/v1/sandboxes`,
+          method: "POST",
+        })
+        .reply(200, record);
+
+      pool
+        .intercept({
+          path: `/sandbox/v1/sandboxes`,
+          method: "GET",
+        })
+        .reply(200, [record]);
+
+      const sandbox = await manager.createSandbox();
+      const info = sandbox.toInfo();
+      assert.equal(info.lastUsedAt, "2024-01-01T00:00:05.000Z");
+
+      const sandboxes = await manager.listSandboxes();
+      assert.equal(sandboxes.length, 1);
+      assert.equal(sandboxes[0].id, record.id);
+    },
+    { accountId: undefined, baseUrl: `${ORIGIN}/sandbox/v1` }
+  );
 });
 
 test("performs file operations", async () => {
