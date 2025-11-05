@@ -5,4 +5,8 @@ export {
   type CreateSandboxOptions,
 } from "./sandboxManager";
 export { createSandboxServer, startSandboxServer } from "./server";
+export {
+  CloudflareSandboxClient,
+  type CloudflareSandboxClientOptions,
+} from "./cloudflareSandboxClient";
 export * from "./types";

@@ -4,9 +4,9 @@ export interface SandboxInfo {
   id: string;
   createdAt: string;
   lastUsedAt: string;
-  rootPath: string;
   ttlSeconds?: number | null;
   metadata?: SandboxMetadata;
+  jurisdiction?: string | null;
 }
 
 export interface ExecRequest {

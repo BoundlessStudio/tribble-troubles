@@ -1,16 +1,16 @@
 # tribble-troubles
 
-A local-first API for working with Cloudflare-inspired sandboxes. The project exposes
-an HTTP interface that mirrors the command execution, file management, and lifecycle
-controls provided by Cloudflare's Sandbox SDK so that you can prototype integrations
-without deploying a Worker.
+An API façade for the Cloudflare Sandbox service. The project exposes an HTTP
+interface that forwards command execution, file management, and lifecycle
+controls to Cloudflare's managed Sandbox endpoints so that you can build and
+test integrations against the real service from your local environment.
 
 ## Features
 
-- Create and destroy isolated sandbox directories on demand.
+- Provision and destroy Cloudflare sandboxes on demand using your account credentials.
 - Execute commands inside each sandbox with timeouts and custom environment variables.
 - Read, write, and list files while preventing path traversal attacks.
-- Automatically prune sandboxes after a configurable TTL.
+- Delegate TTL enforcement to Cloudflare and manually trigger remote pruning when needed.
 - Ship with a TypeScript SDK (`Sandbox`, `SandboxManager`) for embedding the behaviour
   in other applications.
 
@@ -22,9 +22,15 @@ npm run build
 npm start
 ```
 
-The server listens on port `8787` by default. Use the `SANDBOX_ROOT` environment
-variable to change the directory where sandbox instances are stored and `PORT`
-to change the listening port.
+The server listens on port `8787` by default. Set the following environment
+variables (or provide the equivalent options programmatically) to authenticate
+with Cloudflare:
+
+- `CLOUDFLARE_ACCOUNT_ID` – your Cloudflare account identifier (required)
+- `CLOUDFLARE_API_TOKEN` – an API token with Sandbox permissions (required)
+- `CLOUDFLARE_API_BASE_URL` – optional alternative origin for the Cloudflare API
+
+Use the `PORT` variable to change the listening port.
 
 For rapid iteration you can run the TypeScript sources directly:
 
