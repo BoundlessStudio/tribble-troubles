@@ -14,7 +14,7 @@ import { ensureSandboxRelativePath } from "./utils/path";
 export interface SandboxOptions {
   id: string;
   client: CloudflareSandboxClient;
-  ttlSeconds?: number;
+  ttlSeconds?: number | null;
   metadata?: SandboxMetadata;
   info?: SandboxInfo;
 }
@@ -23,7 +23,7 @@ export class Sandbox {
   public readonly id: string;
   public readonly metadata?: SandboxMetadata;
   private readonly client: CloudflareSandboxClient;
-  private ttlSeconds?: number;
+  private ttlSeconds?: number | null;
   private info?: SandboxInfo;
 
   constructor(options: SandboxOptions) {
@@ -43,7 +43,14 @@ export class Sandbox {
 
   private updateInfo(info: SandboxInfo): void {
     const previous = this.info;
-    const ttl = info.ttlSeconds ?? previous?.ttlSeconds ?? this.ttlSeconds ?? null;
+    const ttl =
+      info.ttlSeconds !== undefined
+        ? info.ttlSeconds
+        : previous?.ttlSeconds !== undefined
+          ? previous.ttlSeconds
+          : this.ttlSeconds !== undefined
+            ? this.ttlSeconds
+            : null;
     this.info = {
       id: info.id ?? this.id,
       createdAt: info.createdAt ?? previous?.createdAt ?? new Date().toISOString(),
@@ -54,7 +61,7 @@ export class Sandbox {
       keepAlive: info.keepAlive ?? previous?.keepAlive,
       status: info.status ?? previous?.status ?? null,
     };
-    if (ttl != null) {
+    if (ttl !== undefined) {
       this.ttlSeconds = ttl;
     }
   }
@@ -102,7 +109,8 @@ export class Sandbox {
 
   public isExpired(referenceDate: Date = new Date()): boolean {
     const info = this.info;
-    const ttlSeconds = info?.ttlSeconds ?? this.ttlSeconds;
+    const ttlSeconds =
+      info?.ttlSeconds !== undefined ? info.ttlSeconds : this.ttlSeconds;
     if (!info || ttlSeconds == null) {
       return false;
     }
