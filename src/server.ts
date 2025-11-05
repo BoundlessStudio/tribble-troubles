@@ -1,9 +1,8 @@
 import http from "node:http";
-import path from "node:path";
 
 import express, { Request, Response, NextFunction } from "express";
 
-import { SandboxManager, SandboxManagerOptions } from "./sandboxManager";
+import { SandboxManager } from "./sandboxManager";
 import { ExecRequest, FileEncoding } from "./types";
 
 class HttpError extends Error {
@@ -16,8 +15,10 @@ class HttpError extends Error {
   }
 }
 
-export interface SandboxServerOptions extends SandboxManagerOptions {
-  basePath?: string;
+export interface SandboxServerOptions {
+  accountId?: string;
+  apiToken?: string;
+  apiBaseUrl?: string;
 }
 
 export interface SandboxServer {
@@ -107,21 +108,43 @@ function badRequest(message: string): HttpError {
   return new HttpError(400, message);
 }
 
-function ensureSandbox(manager: SandboxManager, id: string) {
-  const sandbox = manager.getSandbox(id);
-  if (!sandbox) {
-    throw notFound(`Sandbox with id \"${id}\" not found`);
+async function ensureSandbox(manager: SandboxManager, id: string) {
+  try {
+    return await manager.requireSandbox(id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("not found")) {
+      throw notFound(`Sandbox with id "${id}" not found`);
+    }
+    throw error;
   }
-  return sandbox;
 }
 
 export function createSandboxServer(options: SandboxServerOptions = {}): SandboxServer {
-  const basePath = path.resolve(
-    options.basePath ?? process.env.SANDBOX_ROOT ?? path.join(process.cwd(), "sandboxes")
-  );
+  const apiToken = options.apiToken ?? process.env.CLOUDFLARE_API_TOKEN;
+  const providedAccount =
+    options.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? undefined;
+  const configuredBaseUrl = options.apiBaseUrl ?? process.env.CLOUDFLARE_API_BASE_URL;
 
-  const manager = new SandboxManager(basePath, {
-    cleanupIntervalMs: options.cleanupIntervalMs,
+  if (!apiToken) {
+    throw new Error("Cloudflare apiToken must be provided");
+  }
+
+  const defaultBaseUrl = providedAccount
+    ? "https://api.cloudflare.com/client/v4"
+    : "https://api.cloudflare.com/sandbox/v1";
+  const baseUrl = configuredBaseUrl ?? defaultBaseUrl;
+
+  if (!providedAccount && baseUrl.includes("/client/v4")) {
+    throw new Error(
+      "CLOUDFLARE_ACCOUNT_ID is required when using the Workers client/v4 API"
+    );
+  }
+
+  const manager = new SandboxManager({
+    accountId: providedAccount,
+    apiToken,
+    baseUrl,
   });
 
   const app = express();
@@ -131,9 +154,10 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
     "/",
     (_req, res) => {
       res.json({
-        name: "Cloudflare Sandbox API (local)",
+        name: "Cloudflare Sandbox API proxy",
         version: "1.0.0",
-        basePath,
+        accountId: providedAccount ?? null,
+        apiBaseUrl: baseUrl,
         endpoints: {
           listSandboxes: "GET /sandboxes",
           createSandbox: "POST /sandboxes",
@@ -153,7 +177,8 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.get(
     "/sandboxes",
     wrapAsync(async (_req, res) => {
-      res.json({ sandboxes: manager.listSandboxes() });
+      const sandboxes = await manager.listSandboxes();
+      res.json({ sandboxes });
     })
   );
 
@@ -179,7 +204,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.get(
     "/sandboxes/:id",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       res.json({ sandbox: sandbox.toInfo() });
     })
   );
@@ -189,7 +214,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
     wrapAsync(async (req, res) => {
       const deleted = await manager.deleteSandbox(req.params.id);
       if (!deleted) {
-        throw notFound(`Sandbox with id \"${req.params.id}\" not found`);
+        throw notFound(`Sandbox with id "${req.params.id}" not found`);
       }
       res.status(204).send();
     })
@@ -198,7 +223,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.post(
     "/sandboxes/:id/exec",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       const body = req.body ?? {};
 
       if (typeof body.command !== "string" || body.command.trim().length === 0) {
@@ -231,7 +256,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.put(
     "/sandboxes/:id/files",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       const body = req.body ?? {};
 
       if (typeof body.path !== "string" || body.path.trim().length === 0) {
@@ -259,7 +284,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.get(
     "/sandboxes/:id/files",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       const targetPath = typeof req.query.path === "string" ? req.query.path : ".";
       const encoding = parseEncoding(req.query.encoding);
 
@@ -269,18 +294,11 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const errno = (error as NodeJS.ErrnoException).code;
-
         if (message === "Requested path is not a file") {
           const directory = await sandbox.listDirectory(targetPath);
           res.json({ type: "directory", directory });
           return;
         }
-
-        if (errno === "ENOENT") {
-          throw notFound(`Path \"${targetPath}\" was not found in sandbox`);
-        }
-
         throw error;
       }
     })
@@ -289,7 +307,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.delete(
     "/sandboxes/:id/files",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       const body = req.body ?? {};
 
       if (typeof body.path !== "string" || body.path.trim().length === 0) {
@@ -304,7 +322,7 @@ export function createSandboxServer(options: SandboxServerOptions = {}): Sandbox
   app.post(
     "/sandboxes/:id/directories",
     wrapAsync(async (req, res) => {
-      const sandbox = ensureSandbox(manager, req.params.id);
+      const sandbox = await ensureSandbox(manager, req.params.id);
       const body = req.body ?? {};
 
       if (typeof body.path !== "string" || body.path.trim().length === 0) {

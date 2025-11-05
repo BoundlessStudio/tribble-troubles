@@ -20,7 +20,8 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "undici": "^6.21.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

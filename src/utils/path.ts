@@ -1,23 +1,25 @@
-import path from "node:path";
-
-export function resolveSandboxPath(rootPath: string, targetPath: string): string {
+export function ensureSandboxRelativePath(targetPath: string): string {
   if (!targetPath) {
     throw new Error("Path is required");
   }
 
-  const sanitized = targetPath.replace(/\\/g, "/");
-  const trimmed = sanitized.replace(/^\/+/, "");
-  const resolved = path.resolve(rootPath, trimmed);
-  const relative = path.relative(rootPath, resolved);
+  const normalized = targetPath.replace(/\\/g, "/");
+  const trimmed = normalized.replace(/^\/+/, "");
+  const parts: string[] = [];
 
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Path escapes sandbox root");
+  for (const segment of trimmed.split("/")) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      throw new Error("Path escapes sandbox root");
+    }
+    parts.push(segment);
   }
 
-  return resolved;
-}
+  if (parts.length === 0) {
+    return ".";
+  }
 
-export function relativeSandboxPath(rootPath: string, absolutePath: string): string {
-  const relative = path.relative(rootPath, absolutePath) || ".";
-  return relative.split(path.sep).join("/");
+  return parts.join("/");
 }

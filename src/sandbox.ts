@@ -1,9 +1,5 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs/promises";
-import path from "node:path";
-
+import { CloudflareSandboxClient } from "./cloudflareSandboxClient";
 import {
-  DirectoryEntry,
   ExecRequest,
   ExecResult,
   FileContent,
@@ -13,53 +9,114 @@ import {
   SandboxMetadata,
   WriteFileOptions,
 } from "./types";
-import { relativeSandboxPath, resolveSandboxPath } from "./utils/path";
+import { ensureSandboxRelativePath } from "./utils/path";
 
 export interface SandboxOptions {
   id: string;
-  rootPath: string;
-  ttlSeconds?: number;
+  client: CloudflareSandboxClient;
+  ttlSeconds?: number | null;
   metadata?: SandboxMetadata;
+  info?: SandboxInfo;
 }
 
 export class Sandbox {
   public readonly id: string;
-  public readonly rootPath: string;
-  public readonly createdAt: Date;
   public readonly metadata?: SandboxMetadata;
-  private lastUsedAt: Date;
-  private readonly ttlSeconds?: number;
+  private readonly client: CloudflareSandboxClient;
+  private ttlSeconds?: number | null;
+  private info?: SandboxInfo;
 
   constructor(options: SandboxOptions) {
     this.id = options.id;
-    this.rootPath = options.rootPath;
-    this.metadata = options.metadata;
-    this.createdAt = new Date();
-    this.lastUsedAt = new Date();
+    this.client = options.client;
     this.ttlSeconds = options.ttlSeconds;
+    this.metadata = options.metadata;
+    this.info = options.info;
   }
 
-  public toInfo(): SandboxInfo {
-    return {
+  private assertInfo(): SandboxInfo {
+    if (!this.info) {
+      throw new Error("Sandbox metadata has not been loaded yet");
+    }
+    return this.info;
+  }
+
+  private updateInfo(info: SandboxInfo): void {
+    const previous = this.info;
+    const ttl =
+      info.ttlSeconds !== undefined
+        ? info.ttlSeconds
+        : previous?.ttlSeconds !== undefined
+          ? previous.ttlSeconds
+          : this.ttlSeconds !== undefined
+            ? this.ttlSeconds
+            : null;
+    this.info = {
+      id: info.id ?? this.id,
+      createdAt: info.createdAt ?? previous?.createdAt ?? new Date().toISOString(),
+      lastUsedAt: info.lastUsedAt ?? previous?.lastUsedAt ?? info.createdAt ?? new Date().toISOString(),
+      ttlSeconds: ttl,
+      metadata: info.metadata ?? previous?.metadata ?? this.metadata,
+      jurisdiction: info.jurisdiction ?? previous?.jurisdiction ?? null,
+      keepAlive: info.keepAlive ?? previous?.keepAlive,
+      status: info.status ?? previous?.status ?? null,
+    };
+    if (ttl !== undefined) {
+      this.ttlSeconds = ttl;
+    }
+  }
+
+  private markUsed(date: Date = new Date()): void {
+    const timestamp = date.toISOString();
+    if (this.info) {
+      this.info = { ...this.info, lastUsedAt: timestamp };
+      return;
+    }
+
+    this.info = {
       id: this.id,
-      createdAt: this.createdAt.toISOString(),
-      lastUsedAt: this.lastUsedAt.toISOString(),
-      rootPath: this.rootPath,
+      createdAt: timestamp,
+      lastUsedAt: timestamp,
       ttlSeconds: this.ttlSeconds ?? null,
       metadata: this.metadata,
+      jurisdiction: null,
+      status: null,
     };
   }
 
-  public touch(): void {
-    this.lastUsedAt = new Date();
+  public applyInfo(info: SandboxInfo): void {
+    this.updateInfo(info);
+  }
+
+  public toInfo(): SandboxInfo {
+    return this.assertInfo();
+  }
+
+  public async refresh(): Promise<SandboxInfo> {
+    const info = await this.client.getSandbox(this.id);
+    this.updateInfo(info);
+    return info;
+  }
+
+  public async touch(): Promise<void> {
+    const info = await this.client.touchSandbox(this.id);
+    if (info) {
+      this.updateInfo(info);
+    } else {
+      this.markUsed();
+    }
   }
 
   public isExpired(referenceDate: Date = new Date()): boolean {
-    if (this.ttlSeconds == null) {
+    const info = this.info;
+    const ttlSeconds =
+      info?.ttlSeconds !== undefined ? info.ttlSeconds : this.ttlSeconds;
+    if (!info || ttlSeconds == null) {
       return false;
     }
 
-    const expiresAt = new Date(this.lastUsedAt.getTime() + this.ttlSeconds * 1000);
+    const lastUsed = new Date(info.lastUsedAt);
+    const expiresAt = new Date(lastUsed.getTime() + ttlSeconds * 1000);
     return referenceDate > expiresAt;
   }
 
@@ -68,68 +125,12 @@ export class Sandbox {
       throw new Error("Command is required");
     }
 
-    const args = request.args ?? [];
-    const startedAt = new Date();
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let timedOut = false;
-
-    const child = spawn(request.command, args, {
-      cwd: this.rootPath,
-      env: { ...process.env, ...request.env },
-      stdio: "pipe",
-      shell: request.useShell ?? false,
-    });
-
-    if (request.stdin) {
-      child.stdin?.write(request.stdin);
+    const { result, sandbox } = await this.client.execSandbox(this.id, request);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
     }
-    child.stdin?.end();
-
-    child.stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-
-    const timeoutMs = request.timeoutMs ?? 30_000;
-    let timeoutHandle: NodeJS.Timeout | undefined;
-
-    const result = await new Promise<ExecResult>((resolve, reject) => {
-      child.once("error", (error) => {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-        }
-        reject(error);
-      });
-
-      child.once("close", (exitCode) => {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-        }
-        const finishedAt = new Date();
-        const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-        const stderr = Buffer.concat(stderrChunks).toString("utf8");
-        resolve({
-          command: request.command,
-          args,
-          stdout,
-          stderr,
-          exitCode,
-          success: !timedOut && exitCode === 0,
-          durationMs: finishedAt.getTime() - startedAt.getTime(),
-          timedOut,
-          startedAt: startedAt.toISOString(),
-          finishedAt: finishedAt.toISOString(),
-        });
-      });
-
-      if (timeoutMs > 0) {
-        timeoutHandle = setTimeout(() => {
-          timedOut = true;
-          child.kill("SIGKILL");
-        }, timeoutMs);
-      }
-    });
-
-    this.touch();
     return result;
   }
 
@@ -138,18 +139,15 @@ export class Sandbox {
       throw new Error("Path is required");
     }
 
-    const encoding = options.encoding ?? "utf8";
-    const absolutePath = resolveSandboxPath(this.rootPath, options.path);
+    ensureSandboxRelativePath(options.path);
 
-    if (options.createDirectories) {
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    const { file, sandbox } = await this.client.writeFile(this.id, options);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
     }
-
-    const buffer = Buffer.from(options.content, encoding === "base64" ? "base64" : "utf8");
-    await fs.writeFile(absolutePath, buffer);
-
-    this.touch();
-    return this.readFile({ path: options.path, encoding });
+    return file;
   }
 
   public async readFile(options: ReadFileOptions): Promise<FileContent> {
@@ -158,82 +156,47 @@ export class Sandbox {
     }
 
     const encoding = options.encoding ?? "utf8";
-    const absolutePath = resolveSandboxPath(this.rootPath, options.path);
-    const stat = await fs.stat(absolutePath);
+    ensureSandboxRelativePath(options.path);
 
-    if (!stat.isFile()) {
-      throw new Error("Requested path is not a file");
+    const { file, sandbox } = await this.client.readFile(this.id, options.path, encoding);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
     }
-
-    const buffer = await fs.readFile(absolutePath);
-    const content = encoding === "base64" ? buffer.toString("base64") : buffer.toString("utf8");
-
-    this.touch();
-    return {
-      path: relativeSandboxPath(this.rootPath, absolutePath),
-      encoding,
-      content,
-      size: stat.size,
-      modifiedAt: stat.mtime.toISOString(),
-    };
+    return file;
   }
 
   public async deletePath(targetPath: string): Promise<void> {
-    const absolutePath = resolveSandboxPath(this.rootPath, targetPath);
-    await fs.rm(absolutePath, { recursive: true, force: true });
-    this.touch();
+    const info = await this.client.deletePath(this.id, targetPath);
+    if (info) {
+      this.updateInfo(info);
+    } else {
+      this.markUsed();
+    }
   }
 
   public async ensureDirectory(targetPath: string): Promise<void> {
-    const absolutePath = resolveSandboxPath(this.rootPath, targetPath);
-    await fs.mkdir(absolutePath, { recursive: true });
-    this.touch();
+    const { sandbox } = await this.client.ensureDirectory(this.id, targetPath);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
+    }
   }
 
   public async listDirectory(targetPath = "."): Promise<ListDirectoryResult> {
-    const absolutePath = resolveSandboxPath(this.rootPath, targetPath);
-    const stat = await fs.stat(absolutePath);
-
-    if (!stat.isDirectory()) {
-      throw new Error("Requested path is not a directory");
+    const { directory, sandbox } = await this.client.listDirectory(this.id, targetPath);
+    if (sandbox) {
+      this.updateInfo(sandbox);
+    } else {
+      this.markUsed();
     }
-
-    const dirents = await fs.readdir(absolutePath, { withFileTypes: true });
-    const entries: DirectoryEntry[] = await Promise.all(
-      dirents.map(async (dirent) => {
-        const entryPath = path.join(absolutePath, dirent.name);
-        const entryStat = await fs.stat(entryPath);
-        const relativePath = relativeSandboxPath(this.rootPath, entryPath);
-
-        const type = dirent.isDirectory()
-          ? "directory"
-          : dirent.isSymbolicLink()
-          ? "symlink"
-          : "file";
-
-        const entry: DirectoryEntry = {
-          name: dirent.name,
-          path: relativePath,
-          type,
-          modifiedAt: entryStat.mtime.toISOString(),
-        };
-
-        if (entryStat.isFile()) {
-          entry.size = entryStat.size;
-        }
-
-        return entry;
-      })
-    );
-
-    this.touch();
-    return {
-      path: relativeSandboxPath(this.rootPath, absolutePath),
-      entries,
-    };
+    return directory;
   }
 
   public async dispose(): Promise<void> {
-    await fs.rm(this.rootPath, { recursive: true, force: true });
+    const info = await this.client.deleteSandbox(this.id);
+    this.updateInfo(info);
   }
 }

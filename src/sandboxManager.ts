@@ -1,14 +1,8 @@
-import fs from "node:fs";
-import fsPromises from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-
+import { CloudflareSandboxClient, CloudflareSandboxClientOptions } from "./cloudflareSandboxClient";
 import { Sandbox } from "./sandbox";
 import { SandboxInfo, SandboxMetadata } from "./types";
 
-export interface SandboxManagerOptions {
-  cleanupIntervalMs?: number;
-}
+export interface SandboxManagerOptions extends CloudflareSandboxClientOptions {}
 
 export interface CreateSandboxOptions {
   id?: string;
@@ -17,95 +11,80 @@ export interface CreateSandboxOptions {
 }
 
 export class SandboxManager {
-  private readonly basePath: string;
+  private readonly client: CloudflareSandboxClient;
   private readonly sandboxes = new Map<string, Sandbox>();
-  private readonly cleanupInterval?: NodeJS.Timeout;
 
-  constructor(basePath: string, options: SandboxManagerOptions = {}) {
-    this.basePath = path.resolve(basePath);
-    fs.mkdirSync(this.basePath, { recursive: true });
-
-    const cleanupIntervalMs = options.cleanupIntervalMs ?? 60_000;
-    if (cleanupIntervalMs > 0) {
-      this.cleanupInterval = setInterval(() => {
-        void this.pruneExpired();
-      }, cleanupIntervalMs);
-      this.cleanupInterval.unref();
-    }
+  constructor(options: SandboxManagerOptions) {
+    this.client = new CloudflareSandboxClient(options);
   }
 
-  public getBasePath(): string {
-    return this.basePath;
+  private ensureCached(info: SandboxInfo): Sandbox {
+    let sandbox = this.sandboxes.get(info.id);
+    if (!sandbox) {
+      sandbox = new Sandbox({
+        id: info.id,
+        client: this.client,
+        ttlSeconds: info.ttlSeconds ?? undefined,
+        metadata: info.metadata,
+        info,
+      });
+      this.sandboxes.set(info.id, sandbox);
+    } else {
+      sandbox.applyInfo(info);
+    }
+    return sandbox;
   }
 
   public async createSandbox(options: CreateSandboxOptions = {}): Promise<Sandbox> {
-    const id = options.id ?? randomUUID();
-    if (this.sandboxes.has(id)) {
-      throw new Error(`Sandbox with id \"${id}\" already exists`);
-    }
-
-    const rootPath = path.join(this.basePath, id);
-    await fsPromises.mkdir(rootPath, { recursive: true });
-
-    const sandbox = new Sandbox({
-      id,
-      rootPath,
+    const info = await this.client.createSandbox({
+      id: options.id,
       metadata: options.metadata,
       ttlSeconds: options.ttlSeconds,
     });
-
-    this.sandboxes.set(id, sandbox);
-    return sandbox;
+    return this.ensureCached(info);
   }
 
   public getSandbox(id: string): Sandbox | undefined {
     return this.sandboxes.get(id);
   }
 
-  public requireSandbox(id: string): Sandbox {
-    const sandbox = this.getSandbox(id);
-    if (!sandbox) {
-      throw new Error(`Sandbox with id \"${id}\" not found`);
+  public async requireSandbox(id: string): Promise<Sandbox> {
+    const cached = this.getSandbox(id);
+    if (cached) {
+      return cached;
     }
-    return sandbox;
+
+    const info = await this.client.getSandbox(id);
+    return this.ensureCached(info);
   }
 
-  public listSandboxes(): SandboxInfo[] {
-    return Array.from(this.sandboxes.values()).map((sandbox) => sandbox.toInfo());
+  public async listSandboxes(): Promise<SandboxInfo[]> {
+    const sandboxes = await this.client.listSandboxes();
+    sandboxes.forEach((info) => {
+      this.ensureCached(info);
+    });
+    return sandboxes;
   }
 
   public async deleteSandbox(id: string): Promise<boolean> {
-    const sandbox = this.sandboxes.get(id);
-    if (!sandbox) {
-      return false;
+    try {
+      await this.client.deleteSandbox(id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("not found")) {
+        return false;
+      }
+      throw error;
     }
-
     this.sandboxes.delete(id);
-    await sandbox.dispose();
     return true;
   }
 
-  public async pruneExpired(referenceDate: Date = new Date()): Promise<number> {
-    let removed = 0;
-    for (const [id, sandbox] of this.sandboxes.entries()) {
-      if (sandbox.isExpired(referenceDate)) {
-        await this.deleteSandbox(id);
-        removed += 1;
-      }
-    }
-    return removed;
+  public async pruneExpired(): Promise<number> {
+    return this.client.pruneSandboxes();
   }
 
   public async dispose(): Promise<void> {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-    }
-
-    const disposeOperations = Array.from(this.sandboxes.entries()).map(async ([id, sandbox]) => {
-      this.sandboxes.delete(id);
-      await sandbox.dispose();
-    });
-
-    await Promise.all(disposeOperations);
+    this.sandboxes.clear();
   }
 }
