@@ -1,0 +1,31 @@
+{
+  "name": "tribble-troubles",
+  "version": "1.0.0",
+  "description": "Local API for managing Cloudflare-style sandboxes",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "dev": "ts-node src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "keywords": [
+    "cloudflare",
+    "sandbox",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
