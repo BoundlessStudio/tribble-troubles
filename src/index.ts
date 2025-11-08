@@ -1,62 +1,27 @@
-import { getSandbox } from '@cloudflare/sandbox';
+import { OpenAPIHono } from '@hono/zod-openapi'
+import { cors } from 'hono/cors';
+import { type Env } from './types';
+import sandboxRoutes from './routes/sandbox';
+import sessionRoutes from './routes/session';
 
-interface CmdOutput {
-  success: boolean;
-  stdout: string;
-  stderr: string;
-}
-// helper to read the outputs from `.exec` results
-const getOutput = (res: CmdOutput) => (res.success ? res.stdout : res.stderr);
 
-const EXTRA_SYSTEM =
-  'You are an automatic feature-implementer/bug-fixer.' +
-  'You apply all necessary changes to achieve the user request. You must ensure you DO NOT commit the changes, ' +
-  'so the pipeline can read the local `git diff` and apply the change upstream.';
+const app = new OpenAPIHono<{ Bindings: Env }>()
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === 'POST') {
-      try {
-        const { repo, task } = await request.json<{
-          repo?: string;
-          task?: string;
-        }>();
-        if (!repo || !task)
-          return new Response('invalid body', { status: 400 });
+// CORS should be called before any route
+app.use('/api/*', cors());
 
-        // get the repo name
-        const name = repo.split('/').pop() ?? 'tmp';
+// Routes
+app.route('/api', sandboxRoutes);
+app.route('/api', sessionRoutes);
 
-        // open sandbox
-        const sandbox = getSandbox(
-          env.Sandbox,
-          crypto.randomUUID().slice(0, 8)
-        );
+// The OpenAPI documentation 
+app.doc('/api/doc', {
+  openapi: '3.0.0',
+  info: {
+    version: '1.0.0',
+    title: 'My API',
+  },
+})
 
-        // git clone repo
-        await sandbox.gitCheckout(repo, { targetDir: name });
-
-        const { ANTHROPIC_API_KEY } = env;
-
-        // Set env vars for the session
-        await sandbox.setEnvVars({ ANTHROPIC_API_KEY });
-
-        // kick off CC with our query
-        var safe_task = task.replaceAll(
-          '"',
-          '\\"'
-        )
-        const cmd = `cd ${name} && claude --append-system-prompt "${EXTRA_SYSTEM}" -p "${safe_task}" --permission-mode acceptEdits`;
-
-        const logs = getOutput(await sandbox.exec(cmd));
-        const diff = getOutput(await sandbox.exec('git diff'));
-        return Response.json({ logs, diff });
-      } catch {
-        return new Response('invalid body', { status: 400 });
-      }
-    }
-    return new Response('not found');
-  }
-};
-
+export default app;
 export { Sandbox } from '@cloudflare/sandbox';

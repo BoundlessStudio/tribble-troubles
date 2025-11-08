@@ -1,5 +1,5 @@
 {
-  "name": "@cloudflare/sandbox-claude-code-example",
+  "name": "tribble-troubles",
   "version": "1.0.0",
   "type": "module",
   "private": true,
@@ -16,6 +16,11 @@
     "@types/node": "^24.9.2",
     "typescript": "^5.9.3",
     "wrangler": "^4.46.0"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^1.1.4",
+    "hono": "^4.10.4",
+    "zod": "^4.1.12"
   },
   "author": "",
   "license": "MIT"
