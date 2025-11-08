@@ -8,7 +8,7 @@ export function createApp() {
         return c.json(
           {
             ok: false,
-            error: JSON.parse(result.error.message),
+            error: result.error.issues,
             source: 'ZodError',
           },
           422

@@ -47,7 +47,6 @@ const SandboxCreationSchema = z
 		}),
 		ttl: z.string()
 					.optional()
-					.default("10m")
 					.openapi({
 						example: 'A string like "30s", "3m", "5m", "1h"',
 		}),

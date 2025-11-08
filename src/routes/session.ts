@@ -61,6 +61,13 @@ const IdentityAndIdParamsSchema = z.object({
     }),
 })
 
+const SessionIdSchema = z
+	.object({
+		id: z.string().openapi({
+			example: '1212121',
+		})
+	})
+	.openapi('SessionId')
 
 
 const createSession = createRoute({
@@ -71,6 +78,11 @@ const createSession = createRoute({
   },
   responses: {
     200: {
+      content: {
+        'application/json': {
+          schema: SessionIdSchema,
+        },
+      },
       description: 'start the session',
     },
   },
@@ -94,8 +106,8 @@ app.openapi(createSession, async (c) => {
 	const { identity } = c.req.valid('param')
 	const options = await c.req.json<SessionOptions>()
 	const sandbox = getSandbox(c.env.Sandbox, identity)
-  const _ = await sandbox.createSession(options)
-	return c.body(null)
+  const session = await sandbox.createSession(options)
+	return c.json({ id: session.id })
 })
 
 
