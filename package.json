@@ -1,32 +1,22 @@
 {
-  "name": "tribble-troubles",
+  "name": "@cloudflare/sandbox-claude-code-example",
   "version": "1.0.0",
-  "description": "Local API for managing Cloudflare-style sandboxes",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "private": true,
+  "description": "A minimal example of using the Claude Code with Sandbox SDK",
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tests/*.test.js",
-    "dev": "ts-node src/server.ts",
-    "start": "node dist/server.js"
-  },
-  "keywords": [
-    "cloudflare",
-    "sandbox",
-    "api"
-  ],
-  "author": "",
-  "license": "MIT",
-  "type": "commonjs",
-  "dependencies": {
-    "express": "^5.1.0",
-    "undici": "^6.21.0"
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/express": "^5.0.5",
-    "@types/node": "^24.10.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
-  }
+    "@cloudflare/sandbox": "0.4.17",
+    "@types/node": "^24.9.2",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.46.0"
+  },
+  "author": "",
+  "license": "MIT"
 }
