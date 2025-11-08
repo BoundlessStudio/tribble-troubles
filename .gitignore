@@ -12,3 +12,9 @@ yarn-error.log*
 .idea/
 .vscode/
 *.swp
+
+# environmental variables
+.dev.vars
+
+# wrangler
+.wrangler/
