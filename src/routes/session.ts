@@ -1,29 +1,8 @@
-//import { Hono } from 'hono';
-//import { type Env } from '../types';
 import { getSandbox, SessionOptions } from '@cloudflare/sandbox';
-import { createRoute, z } from '@hono/zod-openapi'; 
+import { createRoute, z } from '@hono/zod-openapi';
 import { createApp } from '../app';
 
-// const app = new Hono<{ Bindings: Env }>();
-
-// app.post('/:identity/session', async (c) => {
-//   const identity = c.req.param('identity');
-// 	const options = await c.req.json<SessionOptions>();
-// 	const sandbox = getSandbox(c.env.Sandbox, identity);
-//   const session = await sandbox.createSession(options);
-// 	return c.json({ id: session.id });
-// });
-
-// app.delete('/:identity/session/:id', async (c) => {
-// 	const identity = c.req.param('identity');
-//   const id = c.req.param('id');
-// 	const sandbox = getSandbox(c.env.Sandbox, identity);
-// 	await sandbox.deleteSession(id);
-// });
-
-// export default app;
-
-const app = createApp()
+const app = createApp();
 
 const IdentityParamsSchema = z.object({
   identity: z
@@ -34,9 +13,9 @@ const IdentityParamsSchema = z.object({
         name: 'identity',
         in: 'path',
       },
-      example: '1212121',
+      example: 'sandbox-123',
     }),
-})
+});
 
 const IdentityAndIdParamsSchema = z.object({
   identity: z
@@ -47,9 +26,9 @@ const IdentityAndIdParamsSchema = z.object({
         name: 'identity',
         in: 'path',
       },
-      example: '1212121',
+      example: 'sandbox-123',
     }),
-	id: z
+  id: z
     .string()
     .min(3)
     .openapi({
@@ -57,24 +36,48 @@ const IdentityAndIdParamsSchema = z.object({
         name: 'id',
         in: 'path',
       },
-      example: '1212121',
+      example: 'session-123',
     }),
-})
+});
 
 const SessionIdSchema = z
-	.object({
-		id: z.string().openapi({
-			example: '1212121',
-		})
-	})
-	.openapi('SessionId')
-
+  .object({
+    id: z
+      .string()
+      .min(3)
+      .openapi({
+        example: 'session-123',
+      }),
+  })
+  .openapi('SessionId');
 
 const createSession = createRoute({
   method: 'post',
   path: '/sandbox/{identity}/session',
   request: {
     params: IdentityParamsSchema,
+    body: {
+      content: {
+        'application/json': {
+          schema: z
+            .object({
+              options: z
+                .object({
+                  id: z.string().optional(),
+                  name: z.string().optional(),
+                  env: z.record(z.string(), z.string()).optional(),
+                  cwd: z.string().optional(),
+                })
+                .partial()
+                .passthrough()
+                .optional(),
+            })
+            .partial()
+            .optional(),
+        },
+      },
+      required: false,
+    },
   },
   responses: {
     200: {
@@ -83,10 +86,10 @@ const createSession = createRoute({
           schema: SessionIdSchema,
         },
       },
-      description: 'start the session',
+      description: 'Start a new execution session',
     },
   },
-})
+});
 
 const deleteSession = createRoute({
   method: 'delete',
@@ -95,27 +98,26 @@ const deleteSession = createRoute({
     params: IdentityAndIdParamsSchema,
   },
   responses: {
-    200: {
-      description: 'delete the session',
+    204: {
+      description: 'Delete the specified session',
     },
   },
-})
-
-
-app.openapi(createSession, async (c) => {
-	const { identity } = c.req.valid('param')
-	const options = await c.req.json<SessionOptions>()
-	const sandbox = getSandbox(c.env.Sandbox, identity)
-  const session = await sandbox.createSession(options)
-	return c.json({ id: session.id })
-})
-
-
-app.openapi(deleteSession, async (c) => {
-	const { identity, id } = c.req.valid('param')
-	const sandbox = getSandbox(c.env.Sandbox, identity)
-	await sandbox.deleteSession(id)
-	return c.body(null)
 });
 
-export default app
+app.openapi(createSession, async (c) => {
+  const { identity } = c.req.valid('param');
+  const body = c.req.valid('json') ?? {};
+  const options = (body?.options ?? {}) as SessionOptions;
+  const sandbox = getSandbox(c.env.Sandbox, identity);
+  const session = await sandbox.createSession(options);
+  return c.json({ id: session.id });
+});
+
+app.openapi(deleteSession, async (c) => {
+  const { identity, id } = c.req.valid('param');
+  const sandbox = getSandbox(c.env.Sandbox, identity);
+  await sandbox.deleteSession(id);
+  return c.body(null, 204);
+});
+
+export default app;
